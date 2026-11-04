@@ -121,8 +121,15 @@
   </section>
 
   <section class="card">
-    <details>
+    <details id="debugPanel">
       <summary>Journal technique</summary>
+      <label class="small" style="margin-top:10px">
+        <input type="checkbox" id="debugMode"> Mode debug : garder le journal sur ce téléphone
+      </label>
+      <div class="row" style="margin-top:8px">
+        <button id="copyLog" class="primary grow">Copier le journal</button>
+        <button id="clearLog">Effacer</button>
+      </div>
       <pre id="log"></pre>
     </details>
   </section>

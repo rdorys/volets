@@ -4,7 +4,11 @@ import {
 } from './protocol.js';
 
 const $ = (id) => document.getElementById(id);
+const VERSION = '2026-11-04.2';
 const LOCAL_KEY = 'volets.aliases.v1';
+const LOG_KEY = 'volets.log.v1';
+const DEBUG_KEY = 'volets.debug.v1';
+const LOG_MAX_CHARS = 200000;
 const IDENTIFY_DELTA = 20;
 const IDENTIFY_MS = 6000;
 const POLL_MS = 3000;
@@ -19,10 +23,68 @@ const state = {
 
 // --- Journal et messages ---
 
+// Le journal est gardé dans l'ordre chronologique ; en mode debug il survit au rechargement.
+const store = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch { /* stockage indisponible */ } },
+  remove(key) { try { localStorage.removeItem(key); } catch { /* idem */ } },
+};
+
+let logText = '';
+const debugOn = () => $('debugMode').checked;
+
 function log(msg) {
-  const line = `${new Date().toLocaleTimeString()}  ${msg}`;
-  const el = $('log');
-  el.textContent = (line + '\n' + el.textContent).slice(0, 20000);
+  logText = (logText + `${new Date().toISOString()}  ${msg}\n`).slice(-LOG_MAX_CHARS);
+  if (debugOn()) store.set(LOG_KEY, logText);
+  $('log').textContent = logText.split('\n').reverse().join('\n').slice(0, 20000);
+}
+
+function logHeader() {
+  return [
+    `Volets ${VERSION}`,
+    `Date : ${new Date().toISOString()}`,
+    `Navigateur : ${navigator.userAgent}`,
+    `Web Bluetooth : ${navigator.bluetooth ? 'oui' : 'non'}`,
+    `Boîtier : ${state.device?.name || '(aucun)'} — ${state.profile?.label || '?'}`,
+    `Groupes : ${JSON.stringify(state.groups.map(({ el, ...g }) => g))}`,
+    '',
+  ].join('\n');
+}
+
+async function copyLog() {
+  const text = logHeader() + logText;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Journal copié : collez-le dans l'appli Claude.");
+  } catch {
+    // Presse-papiers refusé : on affiche le texte brut à sélectionner.
+    $('log').textContent = text;
+    getSelection().selectAllChildren($('log'));
+    toast('Journal sélectionné : copiez-le manuellement.');
+  }
+}
+
+function initDebug() {
+  $('debugMode').checked = store.get(DEBUG_KEY) === '1';
+  if (debugOn()) {
+    logText = store.get(LOG_KEY) || '';
+    log(`Mode debug actif (${VERSION})`);
+  }
+  $('debugMode').addEventListener('change', () => {
+    store.set(DEBUG_KEY, debugOn() ? '1' : '0');
+    if (debugOn()) {
+      store.set(LOG_KEY, logText);
+      log('Mode debug activé');
+    } else {
+      store.remove(LOG_KEY);
+    }
+  });
+  $('copyLog').addEventListener('click', copyLog);
+  $('clearLog').addEventListener('click', () => {
+    logText = '';
+    store.remove(LOG_KEY);
+    $('log').textContent = '';
+  });
 }
 
 function setStatus(msg, kind = '') {
@@ -185,7 +247,9 @@ async function refreshLive() {
 }
 
 function onLive(dataView) {
-  state.live = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength).slice();
+  const live = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength).slice();
+  if (debugOn() && (!state.live || hex(live) !== hex(state.live))) log(`← état (${live.length} o) : ${hex(live)}`);
+  state.live = live;
   updateValues();
 }
 
@@ -315,6 +379,7 @@ function init() {
   }
   loadLocal();
   loadShared();
+  initDebug();
   $('connect').addEventListener('click', connect);
   $('disconnect').addEventListener('click', disconnect);
   $('globalLevel').addEventListener('change', (ev) => send(OFFSET.globalLevel, Number(ev.target.value)));
