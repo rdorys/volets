@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Volets du bureau</title>
+<meta name="theme-color" content="#1f6feb">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #5d6673;
+    --border: #d9dde3; --accent: #1f6feb; --accent-text: #ffffff;
+    --ok: #1a7f37; --warn: #9a6700; --err: #cf222e; --chip: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #181c22; --text: #e6e9ee; --muted: #9aa4b2;
+      --border: #2b323c; --accent: #4c8dff; --accent-text: #0b0d10;
+      --ok: #3fb950; --warn: #d29922; --err: #f85149; --chip: #222833;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: .9rem; margin: 0 0 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px; margin-bottom: 12px;
+  }
+  button {
+    font: inherit; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--chip); color: var(--text); padding: 10px 14px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+  button:disabled { opacity: .5; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .grow { flex: 1; }
+  .full { width: 100%; }
+  .device-alias { font-size: 1.25rem; font-weight: 700; }
+  .device-name { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: .85rem; word-break: break-all; }
+  .status { font-size: .9rem; color: var(--muted); margin-top: 6px; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--err); } .status.warn { color: var(--warn); }
+  .group { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+  .group.disabled { opacity: .55; }
+  .group-title { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .group-alias { font-weight: 600; }
+  .group-meta { color: var(--muted); font-size: .8rem; }
+  .value { font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--accent); height: 32px; }
+  label.small { font-size: .85rem; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  details summary { cursor: pointer; color: var(--muted); }
+  pre, textarea {
+    font: 12px/1.4 ui-monospace, Menlo, monospace; background: var(--chip); color: var(--text);
+    border-radius: 8px; padding: 8px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto;
+  }
+  textarea { width: 100%; border: 1px solid var(--border); min-height: 140px; }
+  .notice { border-left: 4px solid var(--warn); }
+  .hidden { display: none; }
+  .toast {
+    position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
+    max-width: 528px; margin: 0 auto; background: var(--text); color: var(--bg);
+    padding: 12px 14px; border-radius: 10px; font-size: .95rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Volets du bureau</h1>
+  <p class="sub">Pilotage des boîtiers Distech UNITOUCH, avec des noms lisibles.</p>
+
+  <section id="unsupported" class="card notice hidden">
+    <strong>Bluetooth web indisponible dans ce navigateur.</strong>
+    <p>Sur iPhone : ouvrez cette page dans l'appli gratuite <b>Bluefy</b> (App Store).<br>
+       Sur Android : ouvrez-la dans <b>Chrome</b>.</p>
+  </section>
+
+  <section class="card">
+    <div id="device" class="hidden">
+      <div class="row">
+        <div class="grow">
+          <div id="deviceAlias" class="device-alias"></div>
+          <div id="deviceName" class="device-name"></div>
+        </div>
+        <button id="renameDevice">Renommer</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="connect" class="primary grow">Se connecter à un boîtier</button>
+      <button id="disconnect" class="hidden">Déconnecter</button>
+    </div>
+    <label class="small" style="margin-top:10px">
+      <input type="checkbox" id="showAll"> Afficher tous les appareils Bluetooth (si le boîtier n'apparaît pas)
+    </label>
+    <div id="status" class="status">Non connecté.</div>
+  </section>
+
+  <section id="blinds" class="card hidden">
+    <div class="row">
+      <strong class="grow">Tous les stores</strong>
+      <span id="globalValue" class="value">–</span>
+    </div>
+    <input type="range" id="globalLevel" min="0" max="100" step="1" value="0" aria-label="Niveau de tous les stores">
+    <div id="groups"></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Noms partagés (pour l'équipe)</summary>
+      <p class="sub" style="margin-top:8px">Les noms que vous donnez sont gardés sur ce téléphone.
+        Pour les partager avec tout le monde, copiez ce contenu dans le fichier <code>aliases.json</code> du site.</p>
+      <textarea id="aliasExport" readonly></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="copyAliases">Copier</button>
+        <button id="clearAliases">Oublier mes noms locaux</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Journal technique</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+<div id="toast" class="toast hidden" role="status"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
