@@ -1,10 +1,10 @@
 import {
   PROFILES, NTS_CONFIG_SERVICE, CRYPTO_SERVICE, ALL_SERVICES,
-  parseBlindConfig, OFFSET, readFloat, blindCommand, hex,
-} from './protocol.js';
+  parseBlindConfig, OFFSET, ROTATION_MIN, ROTATION_MAX, readFloat, mergeLive, blindCommand, hex,
+} from './protocol.js?v=2026-11-05.2';
 
 const $ = (id) => document.getElementById(id);
-const VERSION = '2026-11-05.1';
+const VERSION = '2026-11-05.2';
 const LOCAL_KEY = 'volets.aliases.v1';
 const LOG_KEY = 'volets.log.v1';
 const DEBUG_KEY = 'volets.debug.v1';
@@ -223,15 +223,17 @@ async function setup() {
   log(`Propriétés écriture : ${describeProps(state.writeChar.properties)} · état : ${describeProps(state.liveChar.properties)}`);
 
   try {
-    state.liveChar.addEventListener('characteristicvaluechanged', (ev) => onLive(ev.target.value));
+    state.liveChar.addEventListener('characteristicvaluechanged', (ev) => onNotify(ev.target.value));
     await state.liveChar.startNotifications();
     state.notifying = true;
     log('Notifications activées');
   } catch (e) {
-    log('Notifications indisponibles, lecture périodique : ' + e.message);
+    log('Notifications indisponibles : ' + e.message);
   }
   await refreshLive();
-  if (!state.notifying) state.pollTimer = setInterval(refreshLive, POLL_MS);
+  // Comme l'appli d'origine (ReadLiveDataRepeatableTask), on relit l'état complet régulièrement :
+  // les notifications seules ne portent pas toute la table.
+  state.pollTimer = setInterval(refreshLive, POLL_MS);
 
   renderGroups();
   $('blinds').classList.remove('hidden');
@@ -239,25 +241,54 @@ async function setup() {
   setStatus(`Connecté (${p.label}) — ${state.groups.length} groupe(s) de stores`, 'ok');
 }
 
+// Android refuse deux opérations GATT simultanées : lectures et écritures passent l'une après l'autre.
+let gattChain = Promise.resolve();
+function queued(fn) {
+  const p = gattChain.then(fn);
+  gattChain = p.catch(() => {});
+  return p;
+}
+
+let reading = false;
+let readTimer;
+
 async function refreshLive() {
-  if (!state.liveChar) return;
+  if (!state.liveChar || reading) return;
+  reading = true;
   try {
-    onLive(await state.liveChar.readValue());
+    const value = await queued(() => state.liveChar.readValue());
+    if (state.liveChar) onLive(value);
   } catch (e) {
     log('Lecture état : ' + e.message);
+  } finally {
+    reading = false;
   }
 }
 
+const bytesOf = (dataView) => new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength).slice();
+
 function onLive(dataView) {
-  const live = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength).slice();
+  const live = bytesOf(dataView);
   // Le premier état est toujours journalisé (utile au diagnostic) ; les suivants en mode debug.
   if (!state.live || (debugOn() && hex(live) !== hex(state.live))) log(`← état (${live.length} o) : ${hex(live)}`);
-  state.live = live;
+  state.live = mergeLive(state.live, live);
   updateValues();
+}
+
+// Une notification signale un changement : on l'affiche tout de suite (début de table),
+// puis on relit la table complète peu après.
+function onNotify(dataView) {
+  const chunk = bytesOf(dataView);
+  if (debugOn()) log(`← notification (${chunk.length} o) : ${hex(chunk)}`);
+  state.live = mergeLive(state.live, chunk);
+  updateValues();
+  clearTimeout(readTimer);
+  readTimer = setTimeout(refreshLive, 400);
 }
 
 function onDisconnected() {
   clearInterval(state.pollTimer);
+  clearTimeout(readTimer);
   state.server = state.writeChar = state.liveChar = state.live = state.writeMode = null;
   state.notifying = false;
   $('disconnect').classList.add('hidden');
@@ -277,8 +308,8 @@ async function send(offset, value) {
   const frame = blindCommand(offset, value);
   log(`→ ${hex(frame)}  (décalage ${offset}, valeur ${value})`);
   try {
-    await writeFrame(frame);
-    if (!state.notifying) setTimeout(refreshLive, 800);
+    await queued(() => writeFrame(frame));
+    setTimeout(refreshLive, 800);
   } catch (e) {
     log('Échec envoi : ' + e.message);
     toast("La commande n'est pas passée : " + e.message);
@@ -338,8 +369,13 @@ function renderDevice() {
   $('deviceName').textContent = name;
 }
 
-function fmt(v) {
-  return Number.isFinite(v) ? `${Math.round(v)} %` : '–';
+function fmt(v, unit = ' %') {
+  return Number.isFinite(v) ? `${Math.round(v)}${unit}` : '–';
+}
+
+// Ne déplace pas un curseur que l'utilisateur est en train de manipuler.
+function syncSlider(slider, v) {
+  if (slider && Number.isFinite(v) && document.activeElement !== slider) slider.value = v;
 }
 
 function renderGroups() {
@@ -358,7 +394,7 @@ function renderGroups() {
       <input type="range" min="0" max="100" step="1" data-slider="level" aria-label="Niveau">
       <div class="rotation hidden">
         <div class="row"><span class="grow group-meta">Orientation des lames</span><span class="value" data-rotation>–</span></div>
-        <input type="range" min="0" max="100" step="1" data-slider="rotation" aria-label="Orientation">
+        <input type="range" min="${ROTATION_MIN}" max="${ROTATION_MAX}" step="1" data-slider="rotation" aria-label="Orientation (degrés)">
       </div>
       <div class="row">
         <button data-act="0">0 %</button>
@@ -396,14 +432,15 @@ function updateValues() {
   if (!state.live) return;
   const global = readFloat(state.live, OFFSET.globalLevelFeedback);
   $('globalValue').textContent = fmt(global);
+  syncSlider($('globalLevel'), global);
   for (const g of state.groups) {
     if (!g.el) continue;
     const level = readFloat(state.live, OFFSET.levelFeedback(g.index));
-    const rotation = readFloat(state.live, OFFSET.rotationFeedback(g.index));
+    const rotation = readFloat(state.live, OFFSET.rotation(g.index));
     g.el.querySelector('[data-level]').textContent = fmt(level);
-    g.el.querySelector('[data-rotation]').textContent = fmt(rotation);
-    const slider = g.el.querySelector('[data-slider=level]');
-    if (Number.isFinite(level) && document.activeElement !== slider) slider.value = level;
+    g.el.querySelector('[data-rotation]').textContent = fmt(rotation, ' °');
+    syncSlider(g.el.querySelector('[data-slider=level]'), level);
+    syncSlider(g.el.querySelector('[data-slider=rotation]'), rotation);
   }
 }
 

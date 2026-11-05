@@ -119,6 +119,12 @@ export function parseBlindConfig(b) {
 }
 
 // --- Données en direct (LiveDataOffsetHelper / BlindsLiveDataExtension) ---
+// Bloc de 16 octets par groupe : consigne hauteur, hauteur mesurée (%), orientation (degrés, signée),
+// puis une 4e valeur égale à l'orientation + 90 sur les boîtiers observés. Les commandes écrivent
+// dans cette même table : le décalage d'une commande est celui de la valeur visée.
+// Le bloc global (0–15) contient les moyennes des groupes.
+export const ROTATION_MIN = -90;
+export const ROTATION_MAX = 90;
 
 export const OFFSET = {
   globalLevel: 0,
@@ -126,8 +132,16 @@ export const OFFSET = {
   level: (i) => 16 + 16 * i,
   levelFeedback: (i) => 20 + 16 * i,
   rotation: (i) => 24 + 16 * i,
-  rotationFeedback: (i) => 28 + 16 * i,
 };
+
+// Les notifications peuvent ne porter que le début de la table (MTU de 23 octets par défaut) :
+// on les superpose à la dernière lecture complète au lieu de la remplacer.
+export function mergeLive(previous, chunk) {
+  if (!previous || chunk.length >= previous.length) return chunk.slice();
+  const merged = previous.slice();
+  merged.set(chunk, 0);
+  return merged;
+}
 
 export function readFloat(b, offset) {
   if (!b || b.length < offset + 4) return NaN;

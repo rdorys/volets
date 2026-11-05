@@ -22,7 +22,8 @@ Le protocole a été reconstitué depuis l'appli officielle *my Personify* 1.9.1
 | Envoi des commandes | `00000004-0000-0000-0000-00137e5a8eef` |
 
 Commande d'un store : 8 octets little-endian `[0x0202][décalage][valeur float32]`,
-décalage `16 + 16 × groupe` pour la hauteur, `24 + 16 × groupe` pour l'orientation, `0` pour tous les stores.
+décalage `16 + 16 × groupe` pour la hauteur (en %), `24 + 16 × groupe` pour l'orientation (en degrés, de −90 à 90),
+`0` pour tous les stores. Les commandes écrivent dans la table d'état en direct, au décalage de la valeur visée.
 
 Outil non officiel, sans lien avec Distech Controls ou Acuity Brands. Les écrans nLight nTS et les boîtiers
 protégés par code PIN ne sont pas pris en charge.
