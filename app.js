@@ -4,7 +4,7 @@ import {
 } from './protocol.js';
 
 const $ = (id) => document.getElementById(id);
-const VERSION = '2026-11-04.2';
+const VERSION = '2026-11-05.1';
 const LOCAL_KEY = 'volets.aliases.v1';
 const LOG_KEY = 'volets.log.v1';
 const DEBUG_KEY = 'volets.debug.v1';
@@ -16,7 +16,7 @@ const POLL_MS = 3000;
 const state = {
   device: null, server: null, profile: null,
   writeChar: null, liveChar: null, groups: [], live: null,
-  pollTimer: null, notifying: false,
+  pollTimer: null, notifying: false, writeMode: null,
   shared: { devices: {}, groups: {} },
   local: { devices: {}, groups: {} },
 };
@@ -219,6 +219,8 @@ async function setup() {
 
   state.writeChar = await (await state.server.getPrimaryService(p.writeService)).getCharacteristic(p.writeChar);
   state.liveChar = await (await state.server.getPrimaryService(p.liveService)).getCharacteristic(p.liveBlinds);
+  state.writeMode = null;
+  log(`Propriétés écriture : ${describeProps(state.writeChar.properties)} · état : ${describeProps(state.liveChar.properties)}`);
 
   try {
     state.liveChar.addEventListener('characteristicvaluechanged', (ev) => onLive(ev.target.value));
@@ -248,14 +250,15 @@ async function refreshLive() {
 
 function onLive(dataView) {
   const live = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength).slice();
-  if (debugOn() && (!state.live || hex(live) !== hex(state.live))) log(`← état (${live.length} o) : ${hex(live)}`);
+  // Le premier état est toujours journalisé (utile au diagnostic) ; les suivants en mode debug.
+  if (!state.live || (debugOn() && hex(live) !== hex(state.live))) log(`← état (${live.length} o) : ${hex(live)}`);
   state.live = live;
   updateValues();
 }
 
 function onDisconnected() {
   clearInterval(state.pollTimer);
-  state.server = state.writeChar = state.liveChar = null;
+  state.server = state.writeChar = state.liveChar = state.live = state.writeMode = null;
   state.notifying = false;
   $('disconnect').classList.add('hidden');
   $('blinds').classList.add('hidden');
@@ -274,13 +277,47 @@ async function send(offset, value) {
   const frame = blindCommand(offset, value);
   log(`→ ${hex(frame)}  (décalage ${offset}, valeur ${value})`);
   try {
-    if (state.writeChar.writeValueWithoutResponse) await state.writeChar.writeValueWithoutResponse(frame);
-    else await state.writeChar.writeValue(frame);
+    await writeFrame(frame);
     if (!state.notifying) setTimeout(refreshLive, 800);
   } catch (e) {
     log('Échec envoi : ' + e.message);
     toast("La commande n'est pas passée : " + e.message);
   }
+}
+
+// L'écriture avec réponse est préférée : le boîtier accuse réception et une erreur remonte.
+// Sans réponse, certains Android perdent la trame en silence. Si un mode échoue, on essaie l'autre
+// et on retient celui qui marche pour la suite de la connexion.
+async function writeFrame(frame) {
+  const c = state.writeChar;
+  const modes = [];
+  const withResponse = () => (c.writeValueWithResponse ? c.writeValueWithResponse(frame) : c.writeValue(frame));
+  const withoutResponse = () => c.writeValueWithoutResponse(frame);
+  if (state.writeMode !== 'without' && (c.properties.write || !c.properties.writeWithoutResponse)) {
+    modes.push(['with', withResponse]);
+  }
+  if (c.properties.writeWithoutResponse && c.writeValueWithoutResponse) modes.push(['without', withoutResponse]);
+  if (state.writeMode === 'without' && c.properties.write) modes.push(['with', withResponse]);
+  let lastError;
+  for (const [mode, fn] of modes) {
+    try {
+      await fn();
+      if (state.writeMode !== mode) log(`Mode d'écriture retenu : ${mode === 'with' ? 'avec' : 'sans'} réponse`);
+      state.writeMode = mode;
+      return;
+    } catch (e) {
+      lastError = e;
+      log(`Écriture ${mode === 'with' ? 'avec' : 'sans'} réponse refusée : ${e.message}`);
+    }
+  }
+  throw lastError || new Error("caractéristique d'écriture non inscriptible");
+}
+
+function describeProps(p) {
+  return Object.entries({
+    read: p.read, write: p.write, writeWithoutResponse: p.writeWithoutResponse,
+    notify: p.notify, indicate: p.indicate,
+  }).filter(([, v]) => v).map(([k]) => k).join(', ') || 'aucune';
 }
 
 async function identify(g) {
