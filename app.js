@@ -1,10 +1,10 @@
 import {
   PROFILES, NTS_CONFIG_SERVICE, CRYPTO_SERVICE, ALL_SERVICES,
   parseBlindConfig, OFFSET, ROTATION_MIN, ROTATION_MAX, readFloat, mergeLive, blindCommand, hex,
-} from './protocol.js?v=2026-11-05.3';
+} from './protocol.js?v=2026-11-05.4';
 
 const $ = (id) => document.getElementById(id);
-const VERSION = '2026-11-05.3';
+const VERSION = '2026-11-05.4';
 const LOCAL_KEY = 'volets.aliases.v1';
 const LOG_KEY = 'volets.log.v1';
 const DEBUG_KEY = 'volets.debug.v1';
@@ -477,6 +477,7 @@ function updateValues() {
 // --- Démarrage ---
 
 function init() {
+  $('version').textContent = `Version ${VERSION}`;
   if (!navigator.bluetooth) {
     $('unsupported').classList.remove('hidden');
     $('connect').disabled = true;
