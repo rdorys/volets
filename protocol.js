@@ -156,7 +156,10 @@ export function blindCommand(offset, value) {
   const v = new DataView(new ArrayBuffer(8));
   v.setInt16(0, BLINDS_COMMAND, true);
   v.setInt16(2, offset, true);
-  v.setFloat32(4, value, true);
+  // NaN = « auto » (WriteBlindGroupAutoRequest). On reproduit le float.NaN de .NET (0xFFC00000)
+  // octet pour octet ; JavaScript écrirait 0x7FC00000.
+  if (Number.isNaN(value)) v.setUint32(4, 0xffc00000, true);
+  else v.setFloat32(4, value, true);
   return new Uint8Array(v.buffer);
 }
 

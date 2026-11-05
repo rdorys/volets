@@ -1,10 +1,10 @@
 import {
   PROFILES, NTS_CONFIG_SERVICE, CRYPTO_SERVICE, ALL_SERVICES,
   parseBlindConfig, OFFSET, ROTATION_MIN, ROTATION_MAX, readFloat, mergeLive, blindCommand, hex,
-} from './protocol.js?v=2026-11-05.2';
+} from './protocol.js?v=2026-11-05.3';
 
 const $ = (id) => document.getElementById(id);
-const VERSION = '2026-11-05.2';
+const VERSION = '2026-11-05.3';
 const LOCAL_KEY = 'volets.aliases.v1';
 const LOG_KEY = 'volets.log.v1';
 const DEBUG_KEY = 'volets.debug.v1';
@@ -16,7 +16,7 @@ const POLL_MS = 3000;
 const state = {
   device: null, server: null, profile: null,
   writeChar: null, liveChar: null, groups: [], live: null,
-  pollTimer: null, notifying: false, writeMode: null,
+  pollTimer: null, notifying: false, writeMode: null, logNextRead: false,
   shared: { devices: {}, groups: {} },
   local: { devices: {}, groups: {} },
 };
@@ -207,9 +207,17 @@ async function setup() {
   log(`Génération détectée : ${p.label}`);
 
   try {
+    const services = await state.server.getPrimaryServices();
+    log(`Services visibles : ${services.map((s) => s.uuid.slice(0, 8)).join(', ')}`);
+  } catch (e) {
+    log('Liste des services indisponible : ' + e.message);
+  }
+  try {
     await state.server.getPrimaryService(CRYPTO_SERVICE);
-    log('Service de sécurité présent : un code PIN pourrait être exigé pour certaines actions');
-  } catch { /* pas de service crypto */ }
+    log("Service de sécurité présent : l'appli d'origine envoie une autorisation chiffrée avant les commandes");
+  } catch (e) {
+    log('Pas de service de sécurité (' + e.name + ')');
+  }
 
   const configChar = await (await state.server.getPrimaryService(p.configService)).getCharacteristic(p.configBlinds);
   const raw = new Uint8Array((await configChar.readValue()).buffer);
@@ -230,6 +238,7 @@ async function setup() {
   } catch (e) {
     log('Notifications indisponibles : ' + e.message);
   }
+  state.logNextRead = true;
   await refreshLive();
   // Comme l'appli d'origine (ReadLiveDataRepeatableTask), on relit l'état complet régulièrement :
   // les notifications seules ne portent pas toute la table.
@@ -269,8 +278,12 @@ const bytesOf = (dataView) => new Uint8Array(dataView.buffer, dataView.byteOffse
 
 function onLive(dataView) {
   const live = bytesOf(dataView);
-  // Le premier état est toujours journalisé (utile au diagnostic) ; les suivants en mode debug.
-  if (!state.live || (debugOn() && hex(live) !== hex(state.live))) log(`← état (${live.length} o) : ${hex(live)}`);
+  // Le premier état et celui qui suit chaque commande sont toujours journalisés ; les autres en mode debug.
+  if (state.logNextRead || (debugOn() && hex(live) !== hex(state.live))) {
+    log(`← état (${live.length} o) : ${hex(live)}`);
+    log('   ' + describeLive(live));
+  }
+  state.logNextRead = false;
   state.live = mergeLive(state.live, live);
   updateValues();
 }
@@ -309,7 +322,7 @@ async function send(offset, value) {
   log(`→ ${hex(frame)}  (décalage ${offset}, valeur ${value})`);
   try {
     await queued(() => writeFrame(frame));
-    setTimeout(refreshLive, 800);
+    setTimeout(() => { state.logNextRead = true; refreshLive(); }, 1500);
   } catch (e) {
     log('Échec envoi : ' + e.message);
     toast("La commande n'est pas passée : " + e.message);
@@ -342,6 +355,16 @@ async function writeFrame(frame) {
     }
   }
   throw lastError || new Error("caractéristique d'écriture non inscriptible");
+}
+
+// Résumé lisible de la table : consigne → hauteur mesurée, orientation, pour chaque groupe.
+function describeLive(b) {
+  const n = (v, u = '') => (Number.isFinite(v) ? Math.round(v) + u : 'auto');
+  const parts = [`global ${n(readFloat(b, OFFSET.globalLevel))}→${Math.round(readFloat(b, OFFSET.globalLevelFeedback))}`];
+  for (const g of state.groups) {
+    parts.push(`G${g.index + 1} ${n(readFloat(b, OFFSET.level(g.index)))}→${Math.round(readFloat(b, OFFSET.levelFeedback(g.index)))} ${n(readFloat(b, OFFSET.rotation(g.index)), '°')}`);
+  }
+  return parts.join(' · ');
 }
 
 function describeProps(p) {
@@ -399,6 +422,7 @@ function renderGroups() {
       <div class="row">
         <button data-act="0">0 %</button>
         <button data-act="100">100 %</button>
+        <button data-act="auto">Auto</button>
         <button data-act="identify" class="grow">Identifier</button>
         <button data-act="rename">Renommer</button>
       </div>`;
@@ -413,6 +437,11 @@ function renderGroups() {
       send(OFFSET.rotation(g.index), Number(ev.target.value)));
     el.querySelector('[data-act="0"]').addEventListener('click', () => send(OFFSET.level(g.index), 0));
     el.querySelector('[data-act="100"]').addEventListener('click', () => send(OFFSET.level(g.index), 100));
+    // WriteBlindGroupAutoRequest : NaN dans la consigne rend la main à l'automatisme du boîtier.
+    el.querySelector('[data-act=auto]').addEventListener('click', async () => {
+      await send(OFFSET.level(g.index), NaN);
+      if (g.hasRotation) await send(OFFSET.rotation(g.index), NaN);
+    });
     el.querySelector('[data-act=identify]').addEventListener('click', () => identify(g));
     el.querySelector('[data-act=rename]').addEventListener('click', () => {
       const v = prompt('Nom de ce store', groupAlias(deviceName, g));
@@ -437,7 +466,8 @@ function updateValues() {
     if (!g.el) continue;
     const level = readFloat(state.live, OFFSET.levelFeedback(g.index));
     const rotation = readFloat(state.live, OFFSET.rotation(g.index));
-    g.el.querySelector('[data-level]').textContent = fmt(level);
+    const auto = !Number.isFinite(readFloat(state.live, OFFSET.level(g.index)));
+    g.el.querySelector('[data-level]').textContent = fmt(level) + (auto ? ' · auto' : '');
     g.el.querySelector('[data-rotation]').textContent = fmt(rotation, ' °');
     syncSlider(g.el.querySelector('[data-slider=level]'), level);
     syncSlider(g.el.querySelector('[data-slider=rotation]'), rotation);

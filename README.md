@@ -27,3 +27,9 @@ décalage `16 + 16 × groupe` pour la hauteur (en %), `24 + 16 × groupe` pour l
 
 Outil non officiel, sans lien avec Distech Controls ou Acuity Brands. Les écrans nLight nTS et les boîtiers
 protégés par code PIN ne sont pas pris en charge.
+
+## Mode automatique
+
+Le bouton « Auto » d'un groupe écrit NaN (`00 00 c0 ff`, le `float.NaN` de .NET) dans sa consigne de
+hauteur puis d'orientation, comme `WriteBlindGroupAutoRequest` dans l'appli d'origine. Une consigne
+NaN lue dans la table signifie que le groupe suit l'automatisme du boîtier.
